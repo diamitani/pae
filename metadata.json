@@ -1,0 +1,6 @@
+{
+  "name": "SalesGency Agent Harness",
+  "description": "Deterministic 6-step GTM prospect outreach agent harness, live DAG wave runner, and multi-platform automation compiler for n8n, Make.com, Gumloop, Composio, and modular SKILL.md packs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
