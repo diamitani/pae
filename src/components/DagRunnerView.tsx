@@ -1,17 +1,20 @@
 import { useState } from 'react';
 import {
   ArrowRight,
+  Check,
   CheckCircle2,
   GitBranch,
   Loader2,
   PauseCircle,
   Play,
   RotateCcw,
+  ShieldCheck,
   SkipForward,
   Upload,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import type {
+  ConnectedOperationStateRow,
   DagWaveLog,
   HarnessBlueprint,
   ProspectRecord,
@@ -19,7 +22,11 @@ import type {
   WholenessReport,
   WorkflowStepSkill,
 } from '../types/harness';
-import { SAMPLE_CSV_LEADS, SAMPLE_WEBHOOK_PAYLOAD } from '../lib/presets';
+import {
+  DEFAULT_CONNECTED_OPS_STATE,
+  SAMPLE_CSV_LEADS,
+  SAMPLE_WEBHOOK_PAYLOAD,
+} from '../lib/presets';
 
 interface DagRunnerViewProps {
   blueprint: HarnessBlueprint;
@@ -77,6 +84,11 @@ export function DagRunnerView({
   const [rawInput, setRawInput] = useState(SAMPLE_CSV_LEADS);
   const [ingestNotice, setIngestNotice] = useState<string | null>(null);
 
+  const [opsRows, setOpsRows] = useState<ConnectedOperationStateRow[]>(
+    DEFAULT_CONNECTED_OPS_STATE
+  );
+  const [reconcilingId, setReconcilingId] = useState<string | null>(null);
+
   const selectedStep = steps.find((s) => s.id === selectedStepId) ?? steps[0];
 
   const handleLoadSample = () => {
@@ -99,6 +111,23 @@ export function DagRunnerView({
     }
   };
 
+  const handleApproveOpsChange = async (id: string) => {
+    setReconcilingId(id);
+    try {
+      const res = await fetch('/api/ops/reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, rows: opsRows }),
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.rows)) {
+        setOpsRows(data.rows);
+      }
+    } finally {
+      setReconcilingId(null);
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -110,10 +139,10 @@ export function DagRunnerView({
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
           <p className="text-xs font-medium text-sky-600">
-            Middle-Out DAG Graph Loop · {blueprint.workflowName}
+            Middle-Out DAG Graph Loop & Connected Operations · {blueprint.workflowName}
           </p>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900 mt-1">
-            Inspect skills, short-circuit preconditions, and run the 6-step loop.
+            Inspect skills, reconcile DNS/CRM state, and run the 6-step loop.
           </h1>
         </div>
 
@@ -167,7 +196,7 @@ export function DagRunnerView({
       {!wholeness.passed && (
         <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-center justify-between gap-4">
           <span>
-            Foundation Wholeness is currently <strong className="font-mono">W = {wholeness.score.toFixed(2)}</strong>. Complete all required intake fields in Blueprint before executing the live loop.
+            Foundation Wholeness is currently <strong className="font-mono">W = {wholeness.score.toFixed(2)}</strong>. Complete all required intake fields in Campaign Wizard before executing the live loop.
           </span>
         </div>
       )}
@@ -467,6 +496,85 @@ export function DagRunnerView({
           </div>
         </section>
       </div>
+
+      {/* Enably Connected Operations & State-Reconciliation Layer */}
+      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-mono text-sky-600">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Enably Connected Operations · Current State vs. Desired State Analysis</span>
+            </div>
+            <h2 className="text-base font-semibold text-slate-900 mt-0.5">
+              Inspect DNS (AWS Route 53 / GoDaddy), CRM field mappings, and sequence suppression before writing changes
+            </h2>
+          </div>
+          <div className="text-xs font-mono text-slate-500">
+            Policy: enably.permissions.v1 (Read-Only Discovery · Single-Use Approval Bindings)
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50/50 text-slate-600 font-medium">
+                <th className="py-2.5 px-4">Operational Area</th>
+                <th className="py-2.5 px-4">Logical Tool & Scope</th>
+                <th className="py-2.5 px-4">Observed Current State</th>
+                <th className="py-2.5 px-4">Approved Desired State</th>
+                <th className="py-2.5 px-4">Proposed Action</th>
+                <th className="py-2.5 px-4 text-right">Approval Gate</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {opsRows.map((row) => (
+                <tr key={row.id} className="hover:bg-slate-50/70">
+                  <td className="py-3 px-4 whitespace-nowrap">
+                    <div className="font-semibold text-slate-900">{row.area}</div>
+                    <div className="text-slate-500">{row.provider}</div>
+                  </td>
+                  <td className="py-3 px-4 font-mono whitespace-nowrap">
+                    <div className="text-slate-900">{row.logicalTool}</div>
+                    <div className="text-[11px] text-slate-500">{row.requiredScope}</div>
+                  </td>
+                  <td className="py-3 px-4 max-w-xs text-slate-600">{row.currentState}</td>
+                  <td className="py-3 px-4 max-w-xs text-slate-800">{row.desiredState}</td>
+                  <td className="py-3 px-4 max-w-xs text-slate-600">{row.proposedAction}</td>
+                  <td className="py-3 px-4 whitespace-nowrap text-right">
+                    {row.gapStatus === 'satisfied' ? (
+                      <div className="inline-flex flex-col items-end">
+                        <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold">
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Satisfied</span>
+                        </span>
+                        {row.approvalHash && (
+                          <span className="font-mono text-[10px] text-slate-400">
+                            {row.approvalHash}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleApproveOpsChange(row.id)}
+                        disabled={reconcilingId === row.id}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-lg hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                      >
+                        {reconcilingId === row.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
+                        )}
+                        <span>Approve & Apply</span>
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </motion.div>
   );
 }

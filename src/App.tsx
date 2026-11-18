@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { TopBar, type WorkspaceTab } from './components/TopBar';
 import { OverviewLanding } from './components/OverviewLanding';
 import { BlueprintView } from './components/BlueprintView';
 import { DagRunnerView } from './components/DagRunnerView';
 import { ProspectsView } from './components/ProspectsView';
 import { ExportStudioView } from './components/ExportStudioView';
+import { AuthPortalModal } from './components/AuthPortalModal';
 import {
   BLUEPRINT_PRESETS,
   TOOL_CATALOG,
@@ -13,16 +16,21 @@ import {
   evaluateWholeness,
 } from './lib/presets';
 import type {
+  CampaignDocType,
   ConnectorDoc,
   DagWaveLog,
   HarnessBlueprint,
   MxCheckResult,
   ProspectRecord,
   StepId,
+  UploadedCampaignDoc,
+  WebsiteTeardownResult,
   WorkflowStepSkill,
+  WorkspaceAccount,
 } from './types/harness';
 
-const STORAGE_BLUEPRINT_KEY = 'salesgency_blueprint_v1';
+const STORAGE_BLUEPRINT_KEY = 'salesgency_blueprint_v2';
+const STORAGE_ACCOUNT_EMAIL_KEY = 'salesgency_account_email_v2';
 
 function parseCsvLeads(csvText: string): ProspectRecord[] {
   const lines = csvText
@@ -122,6 +130,19 @@ export default function App() {
     return BLUEPRINT_PRESETS[0].blueprint;
   });
 
+  const [account, setAccount] = useState<WorkspaceAccount>({
+    id: 'ws_default',
+    email: 'founder@salesgency.ai',
+    workspaceName: 'SalesGency Revenue Lab',
+    companyDomain: 'salesgency.ai',
+    authProvider: 'workspace_portal',
+    createdAt: new Date().toISOString(),
+    documents: [],
+    connectedProviders: ['composio', 'hubspot', 'apollo'],
+  });
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+
   const [steps, setSteps] = useState<WorkflowStepSkill[]>(() =>
     createDefaultSteps(blueprint)
   );
@@ -137,6 +158,28 @@ export default function App() {
   const [isVerifyingMx, setIsVerifyingMx] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const [dispatchFeedback, setDispatchFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedEmail =
+      localStorage.getItem(STORAGE_ACCOUNT_EMAIL_KEY) || 'founder@salesgency.ai';
+    fetch('/api/auth/signin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: savedEmail,
+        workspaceName: 'SalesGency Revenue Lab',
+      }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.account) {
+          setAccount(data.account);
+        }
+      })
+      .catch(() => {
+        // Keep default local workspace account
+      });
+  }, []);
 
   useEffect(() => {
     try {
@@ -182,6 +225,103 @@ export default function App() {
     setBlueprint(found.blueprint);
     setSteps(createDefaultSteps(found.blueprint));
     setRunError(null);
+  };
+
+  const handleApplyTeardownToBlueprint = (teardown: WebsiteTeardownResult) => {
+    const nextBp: HarnessBlueprint = {
+      ...blueprint,
+      workflowName: `${teardown.companyName} Outbound Pipeline`,
+      icp: `${teardown.buyerPersona} — ${teardown.icpSummary}`,
+      signalHypothesis: teardown.signals.join('; ') || teardown.researchHook,
+      valueProposition: `${teardown.researchHook} (${teardown.subject})`,
+    };
+    setBlueprint(nextBp);
+    setSteps(createDefaultSteps(nextBp));
+    setActiveTab('blueprint');
+  };
+
+  const handleSignInSuccess = (nextAccount: WorkspaceAccount) => {
+    setAccount(nextAccount);
+    try {
+      localStorage.setItem(STORAGE_ACCOUNT_EMAIL_KEY, nextAccount.email);
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const handleUploadDocument = async (
+    name: string,
+    docType: CampaignDocType,
+    content: string
+  ) => {
+    setIsUploadingDoc(true);
+    try {
+      const res = await fetch('/api/workspace/docs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: account.email,
+          name,
+          docType,
+          content,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to upload campaign document.');
+      }
+
+      const uploadedDoc: UploadedCampaignDoc | undefined = data.document;
+      if (data.account) {
+        setAccount(data.account);
+      }
+
+      if (auth.currentUser && uploadedDoc) {
+        const docPath = `workspaces/${auth.currentUser.uid}/documents/${uploadedDoc.id}`;
+        try {
+          await setDoc(doc(db, docPath), {
+            ...uploadedDoc,
+            workspaceId: auth.currentUser.uid,
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, docPath);
+        }
+      }
+
+      if (docType === 'lead_csv') {
+        try {
+          const parsedLeads = parseCsvLeads(content);
+          setProspects(parsedLeads);
+          const nextBp: HarnessBlueprint = { ...blueprint, entryMode: 'existing_leads' };
+          setBlueprint(nextBp);
+          setSteps(createDefaultSteps(nextBp));
+        } catch {
+          // Document still saved as context even if not strict CSV columns
+        }
+      }
+    } finally {
+      setIsUploadingDoc(false);
+    }
+  };
+
+  const handleDeleteDocument = async (docId: string) => {
+    const res = await fetch(
+      `/api/workspace/docs/${encodeURIComponent(docId)}?email=${encodeURIComponent(account.email)}`,
+      { method: 'DELETE' }
+    );
+    const data = await res.json();
+    if (res.ok && data.account) {
+      setAccount(data.account);
+    }
+
+    if (auth.currentUser) {
+      const docPath = `workspaces/${auth.currentUser.uid}/documents/${docId}`;
+      try {
+        await deleteDoc(doc(db, docPath));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, docPath);
+      }
+    }
   };
 
   const handleGroundDocs = async () => {
@@ -236,6 +376,7 @@ export default function App() {
           blueprint,
           steps,
           existingLeads: blueprint.entryMode === 'existing_leads' ? prospects : [],
+          accountEmail: account.email,
         }),
       });
       const data = await res.json();
@@ -340,7 +481,11 @@ export default function App() {
             ...p,
             mx,
             truthNotice,
-            approvalStatus: truthNotice ? 'flagged' : p.approvalStatus === 'flagged' ? 'pending' : p.approvalStatus,
+            approvalStatus: truthNotice
+              ? 'flagged'
+              : p.approvalStatus === 'flagged'
+                ? 'pending'
+                : p.approvalStatus,
           };
         })
       );
@@ -357,7 +502,7 @@ export default function App() {
     setProspects((prev) =>
       prev.map((p) =>
         p.mx.hasMx && p.approvalStatus !== 'dispatched'
-          ? { ...p, approvalStatus: 'approved' }
+          ? { ...p, approvalStatus: 'approved', telemetryStatus: 'approved_by_human' }
           : p
       )
     );
@@ -389,7 +534,14 @@ export default function App() {
       const now = new Date().toISOString();
       setProspects((prev) =>
         prev.map((p) =>
-          dispatchedIds.has(p.id) ? { ...p, approvalStatus: 'dispatched', dispatchedAt: now } : p
+          dispatchedIds.has(p.id)
+            ? {
+                ...p,
+                approvalStatus: 'dispatched',
+                telemetryStatus: 'sent',
+                dispatchedAt: now,
+              }
+            : p
         )
       );
       setSteps((prev) =>
@@ -429,6 +581,8 @@ export default function App() {
         }}
         isRunning={isRunning}
         wholenessPassed={wholeness.passed}
+        account={account}
+        onOpenAuthModal={() => setIsAuthModalOpen(true)}
       />
 
       <main className="flex-1">
@@ -439,6 +593,7 @@ export default function App() {
               handleApplyPreset(presetId);
               setActiveTab(targetTab);
             }}
+            onApplyTeardownToBlueprint={handleApplyTeardownToBlueprint}
           />
         )}
 
@@ -446,12 +601,18 @@ export default function App() {
           <BlueprintView
             blueprint={blueprint}
             wholeness={wholeness}
+            steps={steps}
             connectorDocs={connectorDocs}
             isGroundingDocs={isGroundingDocs}
             docsError={docsError}
+            account={account}
+            isUploadingDoc={isUploadingDoc}
             onChangeBlueprint={handleChangeBlueprint}
+            onUpdateStep={handleUpdateStep}
             onApplyPreset={handleApplyPreset}
             onGroundDocs={handleGroundDocs}
+            onUploadDocument={handleUploadDocument}
+            onOpenAuthModal={() => setIsAuthModalOpen(true)}
             onProceedToRunner={() => setActiveTab('runner')}
           />
         )}
@@ -504,6 +665,16 @@ export default function App() {
           />
         )}
       </main>
+
+      <AuthPortalModal
+        isOpen={isAuthModalOpen}
+        account={account}
+        onClose={() => setIsAuthModalOpen(false)}
+        onAccountUpdated={handleSignInSuccess}
+        onUploadDocument={handleUploadDocument}
+        onDeleteDocument={handleDeleteDocument}
+        isUploadingDoc={isUploadingDoc}
+      />
     </div>
   );
 }

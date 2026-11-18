@@ -7,13 +7,20 @@ import {
   ExternalLink,
   Loader2,
   Mail,
+  MessageSquare,
   Search,
   Send,
   ShieldCheck,
   X,
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import type { HarnessBlueprint, ProspectRecord } from '../types/harness';
+import type {
+  DeliverabilityShieldReport,
+  HarnessBlueprint,
+  ProspectRecord,
+  ReplyTriageResult,
+} from '../types/harness';
+import { lintProspectEmail } from '../lib/presets';
 
 interface ProspectsViewProps {
   blueprint: HarnessBlueprint;
@@ -50,6 +57,19 @@ export function ProspectsView({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [webhookTarget, setWebhookTarget] = useState(blueprint.connectors.webhookUrl);
 
+  // Step 07 Deliverability Shield & Reply Triage State
+  const [shieldDomain, setShieldDomain] = useState(
+    blueprint.connectors.senderDomain || 'salesgency.ai'
+  );
+  const [isCheckingShield, setIsCheckingShield] = useState(false);
+  const [shieldReport, setShieldReport] = useState<DeliverabilityShieldReport | null>(null);
+
+  const [sampleReplyText, setSampleReplyText] = useState(
+    'Sounds relevant — do you have 15 minutes this Thursday afternoon to walk through how this connects to our HubSpot setup?'
+  );
+  const [isTriaging, setIsTriaging] = useState(false);
+  const [triageResult, setTriageResult] = useState<ReplyTriageResult | null>(null);
+
   const selectedProspect = prospects.find((p) => p.id === selectedId) ?? null;
 
   const filtered = prospects.filter((p) => {
@@ -70,6 +90,45 @@ export function ProspectsView({
 
   const approvedList = prospects.filter((p) => p.approvalStatus === 'approved');
 
+  const handleRunShieldCheck = async () => {
+    if (!shieldDomain.trim()) return;
+    setIsCheckingShield(true);
+    try {
+      const res = await fetch('/api/gtm/deliverability-shield', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: shieldDomain.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.report) {
+        setShieldReport(data.report);
+      }
+    } finally {
+      setIsCheckingShield(false);
+    }
+  };
+
+  const handleRunReplyTriage = async () => {
+    if (!sampleReplyText.trim()) return;
+    setIsTriaging(true);
+    try {
+      const res = await fetch('/api/gtm/reply-triage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          replyText: sampleReplyText,
+          prospectEmail: selectedProspect?.email || 'prospect@example.com',
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.triage) {
+        setTriageResult(data.triage);
+      }
+    } finally {
+      setIsTriaging(false);
+    }
+  };
+
   const handleExportCsv = () => {
     const rows = [
       [
@@ -79,12 +138,15 @@ export function ProspectsView({
         'Title',
         'Email',
         'MX Verified',
+        '5-Rule Linter',
         'Email Mode',
         'Subject',
         'Body',
+        '{{email_1_body}} Token',
+        'LinkedIn Note (<300c)',
         'Induced Signal',
         'Deduced Signal',
-        'Status',
+        'Telemetry Status',
       ],
       ...prospects.map((p) => [
         p.company,
@@ -93,12 +155,15 @@ export function ProspectsView({
         p.contactTitle,
         p.email,
         p.mx.hasMx ? 'yes' : 'no',
+        p.emailDraft.lint?.passed ? 'pass' : 'review',
         p.emailDraft.mode,
         p.emailDraft.subject,
         p.emailDraft.body.replace(/\n/g, ' '),
+        (p.emailDraft.bodyOnlyToken || p.emailDraft.body).replace(/\n/g, ' '),
+        p.emailDraft.linkedinConnectionNote || '',
         p.brief.inducedSignal,
         p.brief.deducedSignal,
-        p.approvalStatus,
+        p.telemetryStatus,
       ]),
     ];
 
@@ -126,10 +191,10 @@ export function ProspectsView({
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
           <p className="text-xs font-medium text-sky-600">
-            Steps 03–06 · Research Briefs, Calibrated Truth & Approval Gate
+            Steps 03–07 · Research Briefs, 5-Rule Email Linter, Deliverability Shield & Reply Triage
           </p>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900 mt-1">
-            Verify MX deliverability, inspect briefs, and approve outreach.
+            Verify MX deliverability, inspect 5-rule linted copy, and approve outreach.
           </h1>
         </div>
 
@@ -267,14 +332,17 @@ export function ProspectsView({
                   <th className="py-2.5 px-4">Company</th>
                   <th className="py-2.5 px-4">Buyer Persona</th>
                   <th className="py-2.5 px-4">Email & MX Status</th>
-                  <th className="py-2.5 px-4">Induced Signal</th>
-                  <th className="py-2.5 px-4">Draft Mode</th>
+                  <th className="py-2.5 px-4">5-Rule Linter</th>
+                  <th className="py-2.5 px-4">Telemetry Status</th>
                   <th className="py-2.5 px-4 text-right">Gate Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-sm">
                 {filtered.map((p) => {
                   const isSelected = p.id === selectedId;
+                  const lint =
+                    p.emailDraft.lint ??
+                    lintProspectEmail(p.emailDraft.subject, p.emailDraft.body, p.emailDraft.mode);
                   return (
                     <tr
                       key={p.id}
@@ -300,9 +368,7 @@ export function ProspectsView({
                             </span>
                           )}
                           {p.mx.status === 'no_mx' && (
-                            <span className="text-amber-700 font-medium">
-                              No MX Record
-                            </span>
+                            <span className="text-amber-700 font-medium">No MX Record</span>
                           )}
                           {p.mx.status === 'invalid_syntax' && (
                             <span className="text-red-700 font-medium">Invalid Syntax</span>
@@ -312,13 +378,19 @@ export function ProspectsView({
                           )}
                         </div>
                       </td>
-                      <td className="py-2.5 px-4 max-w-xs">
-                        <div className="text-xs text-slate-600 truncate">
-                          {p.brief.inducedSignal}
-                        </div>
+                      <td className="py-2.5 px-4 whitespace-nowrap text-xs font-mono tabular-nums">
+                        {lint.passed ? (
+                          <span className="text-emerald-700 font-medium">
+                            5/5 Passed · {lint.wordCount}w
+                          </span>
+                        ) : (
+                          <span className="text-amber-700 font-medium">
+                            Linter Flag · {lint.wordCount}w
+                          </span>
+                        )}
                       </td>
-                      <td className="py-2.5 px-4 whitespace-nowrap text-xs text-slate-600">
-                        {p.emailDraft.mode === 'full' ? 'Full Email' : 'Body Token'}
+                      <td className="py-2.5 px-4 whitespace-nowrap text-xs font-mono text-slate-600">
+                        {p.telemetryStatus}
                       </td>
                       <td className="py-2.5 px-4 whitespace-nowrap text-right text-xs font-medium">
                         {p.approvalStatus === 'approved' && (
@@ -343,6 +415,125 @@ export function ProspectsView({
         </div>
       )}
 
+      {/* Step 07 Closed-Loop Deliverability Shield & Inbound Reply Triage */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-2">
+        {/* Deliverability Shield */}
+        <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+          <div>
+            <div className="text-xs font-mono text-sky-600">
+              Step 07A · Deliverability Shield (SPF / DKIM / DMARC + MX)
+            </div>
+            <h3 className="text-base font-semibold text-slate-900 mt-0.5">
+              Verify sender domain health & bounce circuit-breakers
+            </h3>
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={shieldDomain}
+              onChange={(e) => setShieldDomain(e.target.value)}
+              placeholder="yourdomain.com"
+              className="flex-1 px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900"
+            />
+            <button
+              type="button"
+              onClick={handleRunShieldCheck}
+              disabled={isCheckingShield}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-slate-900 rounded-lg hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+            >
+              {isCheckingShield ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
+              )}
+              <span>Inspect DNS Shield</span>
+            </button>
+          </div>
+
+          {shieldReport && (
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5 text-xs">
+              <div className="flex items-center justify-between font-mono">
+                <span className="font-semibold text-slate-900">{shieldReport.domain}</span>
+                <span
+                  className={
+                    shieldReport.readyToSend ? 'text-emerald-700 font-semibold' : 'text-red-700'
+                  }
+                >
+                  {shieldReport.readyToSend ? 'READY TO SEND' : 'BLOCKED'}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
+                <div className="p-2 bg-white border border-slate-200 rounded">
+                  SPF: <strong className="uppercase">{shieldReport.spfStatus}</strong>
+                </div>
+                <div className="p-2 bg-white border border-slate-200 rounded">
+                  DKIM: <strong className="uppercase">{shieldReport.dkimStatus}</strong>
+                </div>
+                <div className="p-2 bg-white border border-slate-200 rounded">
+                  DMARC: <strong className="uppercase">{shieldReport.dmarcStatus}</strong>
+                </div>
+              </div>
+              <p className="text-slate-600 leading-relaxed">{shieldReport.summary}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Inbound Reply Triage Classifier */}
+        <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-mono text-sky-600">
+                Step 07B · Closed-Loop Inbound Reply Triage & Global DNC Suppression
+              </div>
+              <h3 className="text-base font-semibold text-slate-900 mt-0.5">
+                Classify prospect replies into CRM actions & automatic opt-out protection
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={handleRunReplyTriage}
+              disabled={isTriaging}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-sky-600 rounded-lg hover:bg-sky-700 disabled:opacity-50 cursor-pointer"
+            >
+              {isTriaging ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <MessageSquare className="w-3.5 h-3.5" />
+              )}
+              <span>Classify Reply</span>
+            </button>
+          </div>
+
+          <textarea
+            rows={2}
+            value={sampleReplyText}
+            onChange={(e) => setSampleReplyText(e.target.value)}
+            placeholder="Paste an inbound prospect reply (e.g. 'Let's book Tuesday', 'Check back in Q3', or 'Unsubscribe me')..."
+            className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900"
+          />
+
+          {triageResult && (
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs">
+              <div className="flex items-center justify-between font-mono">
+                <span className="font-semibold text-slate-900">
+                  Intent: {triageResult.classification}
+                </span>
+                <span className="text-sky-700">
+                  Confidence: {(triageResult.confidence * 100).toFixed(0)}%
+                </span>
+              </div>
+              <div className="text-slate-700">
+                <strong>CRM Action:</strong> {triageResult.crmAction}
+              </div>
+              <div className="text-slate-600">
+                <strong>Suggested Response:</strong> {triageResult.suggestedFollowUp}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Slide-Over Prospect & 6-Part Research Brief Drawer */}
       {selectedProspect && (
         <div
@@ -356,7 +547,8 @@ export function ProspectsView({
             <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-200">
               <div>
                 <div className="text-xs font-mono text-slate-500">
-                  {selectedProspect.domain} · {selectedProspect.industry}
+                  {selectedProspect.domain} · {selectedProspect.industry} ·{' '}
+                  {selectedProspect.telemetryStatus}
                 </div>
                 <h2 className="text-xl font-semibold text-slate-900 mt-0.5">
                   {selectedProspect.company} — {selectedProspect.contactName}
@@ -466,13 +658,34 @@ export function ProspectsView({
               )}
             </div>
 
-            {/* Step 05 Editable Email Draft */}
+            {/* Step 05 Editable Email Draft + 5-Rule Linter + LinkedIn Social DM */}
             <div className="space-y-3 pt-2 border-t border-slate-200">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-slate-900">
-                  Step 05 · Personalized Outreach ({selectedProspect.emailDraft.mode === 'full' ? 'Full Email' : 'Body-Only CRM Token'})
+                  Step 05 · Personalized Outreach & 5-Rule Deterministic Linter
                 </h3>
               </div>
+
+              {selectedProspect.emailDraft.lint && (
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                  {selectedProspect.emailDraft.lint.rules.map((r) => (
+                    <div
+                      key={r.id}
+                      className="p-2 bg-slate-50 border border-slate-200 rounded text-[11px]"
+                    >
+                      <div className="font-semibold text-slate-900 flex items-center gap-1">
+                        <Check
+                          className={`w-3 h-3 ${
+                            r.passed ? 'text-emerald-600' : 'text-amber-600'
+                          }`}
+                        />
+                        <span className="truncate">{r.label}</span>
+                      </div>
+                      <div className="text-slate-500 truncate">{r.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <label className="block text-xs font-medium text-slate-700">
@@ -481,11 +694,21 @@ export function ProspectsView({
                 <input
                   type="text"
                   value={selectedProspect.emailDraft.subject}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const nextSubject = e.target.value;
+                    const lint = lintProspectEmail(
+                      nextSubject,
+                      selectedProspect.emailDraft.body,
+                      selectedProspect.emailDraft.mode
+                    );
                     onUpdateProspect(selectedProspect.id, {
-                      emailDraft: { ...selectedProspect.emailDraft, subject: e.target.value },
-                    })
-                  }
+                      emailDraft: {
+                        ...selectedProspect.emailDraft,
+                        subject: nextSubject,
+                        lint,
+                      },
+                    });
+                  }}
                   className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-600"
                 />
               </div>
@@ -494,19 +717,44 @@ export function ProspectsView({
                 <label className="block text-xs font-medium text-slate-700">
                   {selectedProspect.emailDraft.mode === 'full'
                     ? 'Full Email Copy'
-                    : 'CRM Body Token ({{Email_1_Body}})'}
+                    : 'CRM Body Token ({{email_1_body}})'}
                 </label>
                 <textarea
-                  rows={7}
+                  rows={6}
                   value={selectedProspect.emailDraft.body}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const nextBody = e.target.value;
+                    const lint = lintProspectEmail(
+                      selectedProspect.emailDraft.subject,
+                      nextBody,
+                      selectedProspect.emailDraft.mode
+                    );
                     onUpdateProspect(selectedProspect.id, {
-                      emailDraft: { ...selectedProspect.emailDraft, body: e.target.value },
-                    })
-                  }
+                      emailDraft: {
+                        ...selectedProspect.emailDraft,
+                        body: nextBody,
+                        bodyOnlyToken: lint.bodyOnlyToken,
+                        lint,
+                      },
+                    });
+                  }}
                   className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 leading-relaxed focus:outline-none focus:ring-2 focus:ring-sky-600"
                 />
               </div>
+
+              {selectedProspect.emailDraft.linkedinConnectionNote && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1 text-xs">
+                  <div className="flex items-center justify-between font-medium text-slate-800">
+                    <span>LinkedIn Connection Note (social-dm skill)</span>
+                    <span className="font-mono text-[11px] text-slate-500 tabular-nums">
+                      {selectedProspect.emailDraft.linkedinConnectionNote.length} / 300 chars
+                    </span>
+                  </div>
+                  <p className="text-slate-600">
+                    {selectedProspect.emailDraft.linkedinConnectionNote}
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Footer Gate Actions */}
@@ -514,7 +762,10 @@ export function ProspectsView({
               <button
                 type="button"
                 onClick={() =>
-                  onUpdateProspect(selectedProspect.id, { approvalStatus: 'flagged' })
+                  onUpdateProspect(selectedProspect.id, {
+                    approvalStatus: 'flagged',
+                    telemetryStatus: 'needs_review',
+                  })
                 }
                 className="px-3.5 py-2 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 cursor-pointer"
               >
@@ -524,7 +775,10 @@ export function ProspectsView({
               <button
                 type="button"
                 onClick={() => {
-                  onUpdateProspect(selectedProspect.id, { approvalStatus: 'approved' });
+                  onUpdateProspect(selectedProspect.id, {
+                    approvalStatus: 'approved',
+                    telemetryStatus: 'approved_by_human',
+                  });
                   setSelectedId(null);
                 }}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-sky-600 rounded-lg hover:bg-sky-700 cursor-pointer"

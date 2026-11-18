@@ -1,0 +1,82 @@
+{
+  "entities": {
+    "UserWorkspace": {
+      "title": "UserWorkspace",
+      "description": "Multi-tenant user workspace storing account profile, connected tools, and active campaign blueprint.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the workspace owner."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Owner email address."
+        },
+        "workspaceName": {
+          "type": "string",
+          "description": "Display name of the GTM workspace."
+        },
+        "companyDomain": {
+          "type": "string",
+          "description": "Primary domain of the user's company."
+        },
+        "activeWorkflowName": {
+          "type": "string",
+          "description": "Name of the active prospect outreach campaign."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of last workspace update."
+        }
+      },
+      "required": ["ownerId", "email", "workspaceName", "updatedAt"]
+    },
+    "CampaignDocument": {
+      "title": "CampaignDocument",
+      "description": "Uploaded campaign document (pitch deck, ICP brief, CSV lead list, or API spec) bound to a user workspace.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the document owner."
+        },
+        "name": {
+          "type": "string",
+          "description": "Filename of the uploaded document."
+        },
+        "docType": {
+          "type": "string",
+          "enum": ["pitch_deck", "icp_brief", "lead_csv", "api_spec", "case_study"],
+          "description": "Classification of the uploaded GTM asset."
+        },
+        "extractedSummary": {
+          "type": "string",
+          "description": "Extracted summary used to ground Enably and the 6-step workflow."
+        },
+        "contentSnippet": {
+          "type": "string",
+          "description": "Raw text snippet from the uploaded document."
+        },
+        "uploadedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Upload timestamp."
+        }
+      },
+      "required": ["ownerId", "name", "docType", "extractedSummary", "uploadedAt"]
+    }
+  },
+  "firestore": {
+    "/workspaces/{workspaceId}": {
+      "schema": "UserWorkspace",
+      "description": "Stores user workspace metadata and active campaign settings."
+    },
+    "/workspaces/{workspaceId}/documents/{docId}": {
+      "schema": "CampaignDocument",
+      "description": "Stores uploaded campaign documents scoped to a workspace."
+    }
+  }
+}

@@ -1,4 +1,5 @@
-import { ArrowUpRight, Loader2, Play } from 'lucide-react';
+import { ArrowUpRight, Loader2, Play, UserCheck } from 'lucide-react';
+import type { WorkspaceAccount } from '../types/harness';
 
 export type WorkspaceTab = 'overview' | 'blueprint' | 'runner' | 'prospects' | 'export';
 
@@ -6,13 +7,15 @@ interface TopBarProps {
   activeTab: WorkspaceTab;
   onSelectTab: (tab: WorkspaceTab) => void;
   onPrimaryAction: () => void;
+  onOpenAuthModal: () => void;
+  account: WorkspaceAccount;
   isRunning: boolean;
   wholenessPassed: boolean;
 }
 
 const NAV_ITEMS: Array<{ id: WorkspaceTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
-  { id: 'blueprint', label: 'Blueprint' },
+  { id: 'blueprint', label: 'Campaign' },
   { id: 'runner', label: 'Runner' },
   { id: 'prospects', label: 'Prospects' },
   { id: 'export', label: 'Export' },
@@ -22,6 +25,8 @@ export function TopBar({
   activeTab,
   onSelectTab,
   onPrimaryAction,
+  onOpenAuthModal,
+  account,
   isRunning,
   wholenessPassed,
 }: TopBarProps) {
@@ -64,8 +69,20 @@ export function TopBar({
           })}
         </nav>
 
-        {/* Zone 3: Single Primary Action */}
-        <div className="shrink-0">
+        {/* Zone 3: Account Portal & Primary Action */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={onOpenAuthModal}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <UserCheck className="w-3.5 h-3.5 text-sky-600" />
+            <span className="max-w-[130px] truncate">{account.email}</span>
+            <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+              ({account.documents.length})
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={onPrimaryAction}
@@ -74,7 +91,7 @@ export function TopBar({
           >
             {isOverview ? (
               <>
-                <span>Launch Harness</span>
+                <span>Start Campaign</span>
                 <ArrowUpRight className="w-4 h-4" />
               </>
             ) : isRunning ? (
@@ -85,7 +102,7 @@ export function TopBar({
             ) : (
               <>
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>{wholenessPassed ? 'Run Harness' : 'Complete Intake'}</span>
+                <span>{wholenessPassed ? 'Run Harness' : 'Complete Campaign'}</span>
               </>
             )}
           </button>

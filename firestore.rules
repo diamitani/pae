@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidWorkspace(data) {
+      return data.keys().hasAll(['ownerId', 'email', 'workspaceName', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'email', 'workspaceName', 'companyDomain', 'activeWorkflowName', 'updatedAt'])
+        && data.ownerId is string && data.ownerId == request.auth.uid && data.ownerId.size() <= 128
+        && data.email is string && data.email.size() <= 254
+        && data.workspaceName is string && data.workspaceName.size() >= 1 && data.workspaceName.size() <= 160
+        && (!('companyDomain' in data) || (data.companyDomain is string && data.companyDomain.size() <= 160))
+        && (!('activeWorkflowName' in data) || (data.activeWorkflowName is string && data.activeWorkflowName.size() <= 200))
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidCampaignDocument(data) {
+      return data.keys().hasAll(['ownerId', 'name', 'docType', 'extractedSummary', 'uploadedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'docType', 'extractedSummary', 'contentSnippet', 'uploadedAt'])
+        && data.ownerId is string && data.ownerId == request.auth.uid && data.ownerId.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 240
+        && data.docType in ['pitch_deck', 'icp_brief', 'lead_csv', 'api_spec', 'case_study']
+        && data.extractedSummary is string && data.extractedSummary.size() <= 4000
+        && (!('contentSnippet' in data) || (data.contentSnippet is string && data.contentSnippet.size() <= 12000))
+        && data.uploadedAt is string && data.uploadedAt.size() <= 64;
+    }
+
+    match /workspaces/{workspaceId} {
+      allow get: if isSignedIn() && isValidId(workspaceId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(workspaceId) && workspaceId == request.auth.uid && isValidWorkspace(incoming());
+      allow update: if isSignedIn()
+        && isValidId(workspaceId)
+        && isValidWorkspace(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().diff(existing()).affectedKeys().hasOnly(['workspaceName', 'companyDomain', 'activeWorkflowName', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(workspaceId) && existing().ownerId == request.auth.uid;
+
+      match /documents/{docId} {
+        allow get: if isSignedIn()
+          && isValidId(workspaceId)
+          && isValidId(docId)
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
+        allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+        allow create: if isSignedIn()
+          && isValidId(workspaceId)
+          && isValidId(docId)
+          && isValidCampaignDocument(incoming())
+          && exists(/databases/$(database)/documents/workspaces/$(workspaceId))
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
+        allow update: if isSignedIn()
+          && isValidId(workspaceId)
+          && isValidId(docId)
+          && isValidCampaignDocument(incoming())
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'docType', 'extractedSummary', 'contentSnippet']);
+        allow delete: if isSignedIn()
+          && isValidId(workspaceId)
+          && isValidId(docId)
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
+      }
+    }
+  }
+}
